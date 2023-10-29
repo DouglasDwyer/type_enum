@@ -2,6 +2,12 @@
 name = "type_enum"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DouglasDwyer/type_enum"
+readme = "README.md"
+description = """
+Create tagged unions consisting of different types.
+"""
 
 [dependencies]
 const_list = "0.1.0"
