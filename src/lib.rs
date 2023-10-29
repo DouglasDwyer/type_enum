@@ -8,10 +8,8 @@
 #![feature(core_intrinsics)]
 #![feature(downcast_unchecked)]
 #![feature(unsize)]
-
 #![allow(clippy::no_effect)]
 #![allow(path_statements)]
-
 #![deny(warnings)]
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
@@ -20,53 +18,53 @@
 //! - Create tagged unions consisting of different types
 //! - Execute trait methods common to all type variants on those unions
 //! - Match on type variants to recover the original type
-//! 
+//!
 //! This crate requires nightly Rust.
-//! 
+//!
 //! ### Example
-//! 
+//!
 //! ```rust
 //! use type_enum::*;
-//! 
+//!
 //! type Good = type_list! { u8, i32, String };
-//! 
+//!
 //! let val = TypeEnum::<Good>::new(-23);
-//! 
+//!
 //! // Enums may be cast to any trait common among all enum variants.
 //! println!("{}", val.cast::<dyn ToString>().to_string());
-//! 
+//!
 //! // Enums may be matched to obtain the original type.
 //! let abs = type_match(val)
 //!     .with::<u8>(|x| x as i32)
 //!     .with::<i32>(|x| x.abs())
 //!     .otherwise(|| 0)
 //!     .get();
-//! 
+//!
 //! println!("{abs}");
 //! ```
-//! 
+//!
 //! ### Why not use a normal enum?
-//! 
+//!
 //! While Rust's enum types are incredibly powerful, they place the burden of extending functionality and implementing new traits on the enum definition. For instance, consider the following code snippet:
-//! 
+//!
 //! ```rust
 //! pub enum Bad { U8(u8), U16(u16), String(String) }
-//! 
+//!
 //! pub trait NewBehavior {}
 //! impl NewBehavior for u8 {}
 //! impl NewBehavior for u16 {}
 //! impl NewBehavior for String {}
 //! ```
-//! 
+//!
 //! Even though all three constituent types implement `NewBehavior`, the enum does not. Adding functionality to the enum requires modifying its definition; it does not inherit behavior from its variants. If `Bad` and `NewBehavior` were defined in separate crates, implementing `NewBehavior` on `Bad` might even be impossible. `type_enum` reverses this - the traits usable on a `TypeEnum` are inherited from the variants. This allows for extending code by modifying and maintaining the type variants alone.
 
 use const_list::*;
+use private::*;
 use std::any::*;
 use std::marker::*;
 use std::mem::*;
 use std::ops::*;
 use std::slice::*;
-use private::*;
 
 /// Creates a list of types that may be used to identify a type enum.
 #[macro_export]
@@ -83,7 +81,7 @@ pub struct TypeEnum<D: ListDescriptor> {
     /// The variant of this type enum.
     variant: u8,
     /// The value of the type enum.
-    value: MaybeUninit<D::EnumBacking>
+    value: MaybeUninit<D::EnumBacking>,
 }
 
 impl<D: ListDescriptor> TypeEnum<D> {
@@ -94,21 +92,27 @@ impl<D: ListDescriptor> TypeEnum<D> {
             let variant = VariantId::<T, D>::VALUE;
             let mut res = MaybeUninit::<D::EnumBacking>::uninit();
             res.as_mut_ptr().cast::<T>().write(value);
-    
+
             Self {
                 variant,
-                value: res
+                value: res,
             }
         }
     }
 
     /// Coerces the value within this enum to an unsized type reference.
-    pub const fn cast<U: ?Sized>(&self) -> &U where D: AllCoercible<U> {
+    pub const fn cast<U: ?Sized>(&self) -> &U
+    where
+        D: AllCoercible<U>,
+    {
         unsafe { &*self.cast_raw::<U>() }
     }
 
     /// Coerces the value within this enum to a mutable unsized type reference.
-    pub const fn cast_mut<U: ?Sized>(&mut self) -> &mut U where D: AllCoercible<U> {
+    pub const fn cast_mut<U: ?Sized>(&mut self) -> &mut U
+    where
+        D: AllCoercible<U>,
+    {
         unsafe { &mut *(self.cast_raw::<U>() as *mut _) }
     }
 
@@ -117,17 +121,16 @@ impl<D: ListDescriptor> TypeEnum<D> {
         unsafe {
             if self.variant == VariantId::<T, D>::VALUE {
                 Ok(self.downcast_unchecked())
-            }
-            else {
+            } else {
                 Err(self)
             }
         }
     }
 
     /// Downcasts this value to a discrete type, without performing any checks.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// For this function call to be sound, this type enum must have been created with a `T` value.
     pub unsafe fn downcast_unchecked<T: 'static>(self) -> T {
         VariantId::<T, D>::VALUE;
@@ -135,9 +138,13 @@ impl<D: ListDescriptor> TypeEnum<D> {
     }
 
     /// Coerces this type enum to an unsized type, and returns a raw pointer to the value.
-    const fn cast_raw<U: ?Sized>(&self) -> *const U where D: AllCoercible<U> {
+    const fn cast_raw<U: ?Sized>(&self) -> *const U
+    where
+        D: AllCoercible<U>,
+    {
         unsafe {
-            let virtual_pointer = *<D as AllCoercible<U>>::COERCION_POINTERS.get_unchecked(self.variant as usize);
+            let virtual_pointer =
+                *<D as AllCoercible<U>>::COERCION_POINTERS.get_unchecked(self.variant as usize);
             let res = (self.value.as_ptr() as *const (), virtual_pointer);
             (&res as *const (*const (), *const ())).cast::<&U>().read()
         }
@@ -187,8 +194,7 @@ impl<T: 'static, D: ListDescriptor> VariantId<T, D> {
                 if type_ids_eq(x, &TypeId::of::<T>()) {
                     return i as u8;
                 }
-            }
-            else {
+            } else {
                 unreachable!();
             }
             i += 1;
@@ -222,14 +228,22 @@ impl<F: 'static, R: ListDescriptor> NonemptyListDescriptor for ConsDescriptor<F,
     type Rest = R;
 }
 
-impl<U: ?Sized, F: 'static + Unsize<U>, R: ListDescriptor + AllCoercible<U>> AllCoercible<U> for ConsDescriptor<F, R> {
-    const COERCION_POINTERS: &'static [*const ()] = push_const_array(coercion_pointer::<U, F>(), <R as AllCoercible<U>>::COERCION_POINTERS);
+impl<U: ?Sized, F: 'static + Unsize<U>, R: ListDescriptor + AllCoercible<U>> AllCoercible<U>
+    for ConsDescriptor<F, R>
+{
+    const COERCION_POINTERS: &'static [*const ()] = push_const_array(
+        coercion_pointer::<U, F>(),
+        <R as AllCoercible<U>>::COERCION_POINTERS,
+    );
 }
 
 /// Creates a new compile-time array with the specified value pushed to the front.
 const fn push_const_array<T: Copy>(value: T, arr: &[T]) -> &'static [T] {
     unsafe {
-        let values = std::intrinsics::const_allocate((arr.len() + 1) * std::mem::size_of::<T>(), std::mem::align_of::<T>()) as *mut T;
+        let values = std::intrinsics::const_allocate(
+            (arr.len() + 1) * std::mem::size_of::<T>(),
+            std::mem::align_of::<T>(),
+        ) as *mut T;
         std::ptr::copy_nonoverlapping(arr.as_ptr(), values.add(1), arr.len());
         values.write(value);
         from_raw_parts(values, arr.len() + 1)
@@ -304,7 +318,11 @@ impl<D: ListDescriptor> TypeMatchable for TypeEnum<D> {
 
 /// Begins matching based upon the backing type of a type enum.
 pub fn type_match<M: TypeMatchable, O>(m: M) -> TypeMatch<M, O, Exhaustive, EmptyDescriptor> {
-    TypeMatch { data: PhantomData, matcher: Some(m), output: None }
+    TypeMatch {
+        data: PhantomData,
+        matcher: Some(m),
+        output: None,
+    }
 }
 
 /// Allows for matching the variants of a `TypeEnum`.
@@ -314,18 +332,30 @@ pub struct TypeMatch<M: TypeMatchable, O, E: CaseRequirement, L: ListDescriptor>
     /// The object with which to match.
     matcher: Option<M>,
     /// The result of matching, if any so far.
-    output: Option<O>
+    output: Option<O>,
 }
 
 impl<M: TypeMatchable, O, L: ListDescriptor> TypeMatch<M, O, Exhaustive, L> {
     /// Adds a case to this type match. Unless `otherwise` is called, all type variants must be present for compilation to succeed.
-    pub fn with<T: 'static>(self, f: impl FnOnce(M::Output<T>) -> O) -> TypeMatch<M, O, Exhaustive, ConsDescriptor<T, L>> {
+    pub fn with<T: 'static>(
+        self,
+        f: impl FnOnce(M::Output<T>) -> O,
+    ) -> TypeMatch<M, O, Exhaustive, ConsDescriptor<T, L>> {
         unsafe {
-            if Some(VariantId::<T, M::Descriptor>::VALUE) == self.matcher.as_ref().map(|x| x.variant()) {
-                TypeMatch { data: PhantomData, matcher: None, output: Some(f(self.matcher.unwrap_unchecked().downcast_unchecked::<T>())) }
-            }
-            else {
-                TypeMatch { data: PhantomData, matcher: self.matcher, output: self.output }
+            if Some(VariantId::<T, M::Descriptor>::VALUE)
+                == self.matcher.as_ref().map(|x| x.variant())
+            {
+                TypeMatch {
+                    data: PhantomData,
+                    matcher: None,
+                    output: Some(f(self.matcher.unwrap_unchecked().downcast_unchecked::<T>())),
+                }
+            } else {
+                TypeMatch {
+                    data: PhantomData,
+                    matcher: self.matcher,
+                    output: self.output,
+                }
             }
         }
     }
@@ -333,10 +363,17 @@ impl<M: TypeMatchable, O, L: ListDescriptor> TypeMatch<M, O, Exhaustive, L> {
     /// Adds a catch-all case to the end of a type match.
     pub fn otherwise(self, f: impl FnOnce() -> O) -> TypeMatch<M, O, Nonexhaustive, L> {
         if self.output.is_none() {
-            TypeMatch { data: PhantomData, matcher: None, output: Some(f()) }
-        }
-        else {
-            TypeMatch { data: PhantomData, matcher: None, output: self.output }
+            TypeMatch {
+                data: PhantomData,
+                matcher: None,
+                output: Some(f()),
+            }
+        } else {
+            TypeMatch {
+                data: PhantomData,
+                matcher: None,
+                output: self.output,
+            }
         }
     }
 }
@@ -364,7 +401,7 @@ struct EnsureNoDuplicates<D: ListDescriptor>(PhantomData<fn() -> D>);
 impl<D: ListDescriptor> EnsureNoDuplicates<D> {
     /// Invocations of this constant ensure the invariant is upheld.
     const VALUE: () = Self::ensure();
-    
+
     /// Ensures that the invariant is upheld.
     const fn ensure() {
         assert!(D::IDS.len() < 256, "Maximum type variants exceeded.");
@@ -373,8 +410,10 @@ impl<D: ListDescriptor> EnsureNoDuplicates<D> {
             let mut j = i + 1;
             while j < D::IDS.len() {
                 match (D::IDS.get(i), D::IDS.get(j)) {
-                    (Some(x), Some(y)) => assert!(!type_ids_eq(x, y), "Type list contains duplicates."),
-                    _ => unreachable!()
+                    (Some(x), Some(y)) => {
+                        assert!(!type_ids_eq(x, y), "Type list contains duplicates.")
+                    }
+                    _ => unreachable!(),
                 }
 
                 j += 1;
@@ -399,8 +438,13 @@ impl<A: ListDescriptor, B: ListDescriptor> EnsureListSubset<A, B> {
             let mut j = 0;
             while j < B::IDS.len() {
                 match (A::IDS.get(i), B::IDS.get(j)) {
-                    (Some(a), Some(b)) => if type_ids_eq(a, b) { found = true; break; },
-                    _ => unreachable!()
+                    (Some(a), Some(b)) => {
+                        if type_ids_eq(a, b) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    _ => unreachable!(),
                 }
                 j += 1;
             }
@@ -445,7 +489,7 @@ mod private {
         /// The first item.
         _a: ManuallyDrop<A>,
         /// The rest of the union.
-        _b: ManuallyDrop<B>
+        _b: ManuallyDrop<B>,
     }
 
     /// Marks a type that can be matched with `type_match`.
@@ -459,9 +503,9 @@ mod private {
         fn variant(&self) -> u8;
 
         /// Downcasts this value to the given type.
-        /// 
+        ///
         /// # Safety
-        /// 
+        ///
         /// For this type to be sound, the type enum must be of the correct variant.
         unsafe fn downcast_unchecked<T: 'static>(self) -> Self::Output<T>;
     }
@@ -470,10 +514,10 @@ mod private {
     pub struct Exhaustive;
 
     impl CaseRequirement for Exhaustive {}
-    
+
     /// Marks a match which has a catch-all.
     pub struct Nonexhaustive;
-    
+
     impl CaseRequirement for Nonexhaustive {}
 
     /// Describes which cases must be included in a match.
