@@ -1,3 +1,4 @@
+#![feature(arbitrary_self_types)]
 #![feature(const_heap)]
 #![feature(const_maybe_uninit_as_mut_ptr)]
 #![feature(const_mut_refs)]
@@ -8,6 +9,7 @@
 #![feature(core_intrinsics)]
 #![feature(downcast_unchecked)]
 #![feature(unsize)]
+
 #![allow(clippy::no_effect)]
 #![allow(path_statements)]
 #![deny(warnings)]
@@ -66,6 +68,10 @@ use std::mem::*;
 use std::ops::*;
 use std::slice::*;
 
+#[cfg(feature = "serde")]
+/// Implements serialization and deserialization for type enums.
+mod serialize;
+
 /// Creates a list of types that may be used to identify a type enum.
 #[macro_export]
 macro_rules! type_list {
@@ -77,14 +83,14 @@ macro_rules! type_list {
 }
 
 /// Stores one out of a set number of types.
-pub struct TypeEnum<D: ListDescriptor> {
+pub struct TypeEnum<D: TypeEnumDescriptor> {
     /// The variant of this type enum.
     variant: u8,
     /// The value of the type enum.
     value: MaybeUninit<D::EnumBacking>,
 }
 
-impl<D: ListDescriptor> TypeEnum<D> {
+impl<D: TypeEnumDescriptor> TypeEnum<D> {
     /// Creates a new type enum for the given value.
     pub const fn new<T: 'static>(value: T) -> Self {
         unsafe {
@@ -103,7 +109,7 @@ impl<D: ListDescriptor> TypeEnum<D> {
     /// Coerces the value within this enum to an unsized type reference.
     pub const fn cast<U: ?Sized>(&self) -> &U
     where
-        D: AllCoercible<U>,
+        D: Castable<U>,
     {
         unsafe { &*self.cast_raw::<U>() }
     }
@@ -111,7 +117,7 @@ impl<D: ListDescriptor> TypeEnum<D> {
     /// Coerces the value within this enum to a mutable unsized type reference.
     pub const fn cast_mut<U: ?Sized>(&mut self) -> &mut U
     where
-        D: AllCoercible<U>,
+        D: Castable<U>,
     {
         unsafe { &mut *(self.cast_raw::<U>() as *mut _) }
     }
@@ -140,7 +146,7 @@ impl<D: ListDescriptor> TypeEnum<D> {
     /// Coerces this type enum to an unsized type, and returns a raw pointer to the value.
     const fn cast_raw<U: ?Sized>(&self) -> *const U
     where
-        D: AllCoercible<U>,
+        D: Castable<U>,
     {
         unsafe {
             let virtual_pointer =
@@ -151,7 +157,7 @@ impl<D: ListDescriptor> TypeEnum<D> {
     }
 }
 
-impl<D: ListDescriptor> Drop for TypeEnum<D> {
+impl<D: TypeEnumDescriptor> Drop for TypeEnum<D> {
     fn drop(&mut self) {
         unsafe {
             std::ptr::drop_in_place(self.cast_raw::<dyn Any>() as *mut dyn Any);
@@ -159,7 +165,29 @@ impl<D: ListDescriptor> Drop for TypeEnum<D> {
     }
 }
 
-impl<D: ListDescriptor + AllCoercible<dyn Any>> Deref for TypeEnum<D> {
+impl<D: TypeEnumDescriptor + Castable<dyn TypeEnumClone<D>>> Clone for TypeEnum<D> {
+    fn clone(&self) -> Self {
+        self.cast::<dyn TypeEnumClone<D>>().clone_enum()
+    }
+}
+
+impl<D: TypeEnumDescriptor + Castable<dyn std::fmt::Debug>> std::fmt::Debug for TypeEnum<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cast::<dyn std::fmt::Debug>().fmt(f)
+    }
+}
+
+impl<D: TypeEnumDescriptor + Castable<dyn SelfPartialEq>> PartialEq for TypeEnum<D> {
+    fn eq(&self, other: &Self) -> bool {
+        unsafe {
+            self.variant == other.variant && self.cast::<dyn SelfPartialEq>().partial_eq(other.value.as_ptr() as *const ())
+        }
+    }
+}
+
+impl<D: TypeEnumDescriptor + Castable<dyn SelfPartialEq> + Castable<dyn SelfEq>> Eq for TypeEnum<D> { }
+
+impl<D: TypeEnumDescriptor + Castable<dyn Any>> Deref for TypeEnum<D> {
     type Target = dyn Any;
 
     fn deref(&self) -> &Self::Target {
@@ -167,13 +195,13 @@ impl<D: ListDescriptor + AllCoercible<dyn Any>> Deref for TypeEnum<D> {
     }
 }
 
-impl<D: ListDescriptor + AllCoercible<dyn Any>> DerefMut for TypeEnum<D> {
+impl<D: TypeEnumDescriptor + Castable<dyn Any>> DerefMut for TypeEnum<D> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.cast_mut()
     }
 }
 
-impl<U: ?Sized, D: ListDescriptor + AllCoercible<U>> AsRef<U> for TypeEnum<D> {
+impl<U: ?Sized, D: TypeEnumDescriptor + Castable<U>> AsRef<U> for TypeEnum<D> {
     fn as_ref(&self) -> &U {
         self.cast()
     }
@@ -204,6 +232,7 @@ impl<T: 'static, D: ListDescriptor> VariantId<T, D> {
 }
 
 /// A list that contains no types.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct EmptyDescriptor;
 
 impl ListDescriptor for EmptyDescriptor {
@@ -217,6 +246,34 @@ impl<U: ?Sized> AllCoercible<U> for EmptyDescriptor {
 
 /// A list that contains one or more types, split into a first and rest.
 pub struct ConsDescriptor<F: 'static, R: ListDescriptor>(PhantomData<fn() -> (F, R)>);
+
+impl<F: 'static, R: ListDescriptor> Copy for ConsDescriptor<F, R> {}
+
+impl<F: 'static, R: ListDescriptor> Clone for ConsDescriptor<F, R> {
+    fn clone(&self) -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<F: 'static, R: ListDescriptor> std::fmt::Debug for ConsDescriptor<F, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ConsDescriptor").finish()
+    }
+}
+
+impl<F: 'static, R: ListDescriptor> Default for ConsDescriptor<F, R> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<F: 'static, R: ListDescriptor> PartialEq for ConsDescriptor<F, R> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<F: 'static, R: ListDescriptor> Eq for ConsDescriptor<F, R> {}
 
 impl<F: 'static, R: ListDescriptor> ListDescriptor for ConsDescriptor<F, R> {
     type EnumBacking = LinkedUnion<F, R::EnumBacking>;
@@ -326,7 +383,7 @@ pub fn type_match<M: TypeMatchable, O>(m: M) -> TypeMatch<M, O, Exhaustive, Empt
 }
 
 /// Allows for matching the variants of a `TypeEnum`.
-pub struct TypeMatch<M: TypeMatchable, O, E: CaseRequirement, L: ListDescriptor> {
+pub struct TypeMatch<M: TypeMatchable, O, E: CaseRequirement, L: TypeEnumDescriptor> {
     /// A marker object.
     data: PhantomData<fn(M, O, E, L)>,
     /// The object with which to match.
@@ -335,7 +392,7 @@ pub struct TypeMatch<M: TypeMatchable, O, E: CaseRequirement, L: ListDescriptor>
     output: Option<O>,
 }
 
-impl<M: TypeMatchable, O, L: ListDescriptor> TypeMatch<M, O, Exhaustive, L> {
+impl<M: TypeMatchable, O, L: TypeEnumDescriptor> TypeMatch<M, O, Exhaustive, L> {
     /// Adds a case to this type match. Unless `otherwise` is called, all type variants must be present for compilation to succeed.
     pub fn with<T: 'static>(
         self,
@@ -458,12 +515,56 @@ impl<A: ListDescriptor, B: ListDescriptor> EnsureListSubset<A, B> {
     }
 }
 
+/// Allows an object to be cloned while wrapped in a type enum.
+trait TypeEnumClone<D: TypeEnumDescriptor>: 'static {
+    /// Clones this object into a new type enum.
+    fn clone_enum(&self) -> TypeEnum<D>;
+}
+
+impl<T: 'static + Clone, D: TypeEnumDescriptor> TypeEnumClone<D> for T {
+    fn clone_enum(&self) -> TypeEnum<D>  {
+        TypeEnum::new(self.clone())
+    }
+}
+
+/// Allows an object to be compared while wrapped in a type enum.
+trait SelfPartialEq: 'static {
+    /// Determines whether this object equals another of the same time.
+    /// 
+    /// # Safety
+    /// 
+    /// For this method to be sound, `other` must point to
+    /// a valid instance of type `Self`.
+    unsafe fn partial_eq(&self, other: *const ()) -> bool;
+}
+
+impl<T: 'static + PartialEq> SelfPartialEq for T {
+    unsafe fn partial_eq(&self, other: *const ()) -> bool {
+        self == &*(other as *const _)
+    }
+}
+
+/// Marks an object as obeying strict equality while wrapped in a type enum.
+trait SelfEq: 'static {}
+
+impl<T: 'static + Eq> SelfEq for T {}
+
+/// A list of type variants.
+pub trait TypeEnumDescriptor: ListDescriptor {}
+
+impl<T: ListDescriptor> TypeEnumDescriptor for T {}
+
+/// A list of type variants that may be coerced to the given unsized type.
+pub trait Castable<U: ?Sized>: AllCoercible<U> {}
+
+impl<U: ?Sized, T: AllCoercible<U>> Castable<U> for T {}
+
 /// Hides implementation-related traits.
 mod private {
     use super::*;
 
     /// A list of type variants.
-    pub trait ListDescriptor: AllCoercible<dyn Any> {
+    pub trait ListDescriptor: 'static + Copy + Clone + std::fmt::Debug + Default + PartialEq + Eq + AllCoercible<dyn Any> {
         /// An enum type that is big enough to hold any variant in this list.
         type EnumBacking;
         /// The list of type IDs within this descriptor.

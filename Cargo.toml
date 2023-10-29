@@ -11,3 +11,4 @@ Create tagged unions consisting of different types.
 
 [dependencies]
 const_list = "0.1.0"
+serde = { version = "1.0.190", optional = true, default-features = false }
