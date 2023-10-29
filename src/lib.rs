@@ -58,6 +58,10 @@
 //! ```
 //!
 //! Even though all three constituent types implement `NewBehavior`, the enum does not. Adding functionality to the enum requires modifying its definition; it does not inherit behavior from its variants. If `Bad` and `NewBehavior` were defined in separate crates, implementing `NewBehavior` on `Bad` might even be impossible. `type_enum` reverses this - the traits usable on a `TypeEnum` are inherited from the variants. This allows for extending code by modifying and maintaining the type variants alone.
+//! 
+//! ## Optional features
+//! 
+//! **serde** - Allows for the serialization of `TypeEnum` instances when all variants are serializable.
 
 use const_list::*;
 use private::*;
