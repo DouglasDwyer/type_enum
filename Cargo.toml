@@ -1,0 +1,7 @@
+[package]
+name = "type_enum"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+const_list = "0.1.0"
