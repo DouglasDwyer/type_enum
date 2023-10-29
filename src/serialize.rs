@@ -9,9 +9,12 @@ impl<D: TypeEnumDescriptor + SerializeCastable> Serialize for TypeEnum<D> {
             let mut seq = serializer.serialize_seq(Some(2))?;
             seq.serialize_element(&self.variant)?;
             let virtual_pointer =
-                *<D::AsSerialize<S> as AllCoercible<dyn SerializeInto<S>>>::COERCION_POINTERS.get_unchecked(self.variant as usize);
+                *<D::AsSerialize<S> as AllCoercible<dyn SerializeInto<S>>>::COERCION_POINTERS
+                    .get_unchecked(self.variant as usize);
             let res = (self.value.as_ptr() as *const (), virtual_pointer);
-            let r = (&res as *const (*const (), *const ())).cast::<&dyn SerializeInto<S>>().read();
+            let r = (&res as *const (*const (), *const ()))
+                .cast::<&dyn SerializeInto<S>>()
+                .read();
             r.serialize_into(&mut seq)?;
             seq.end()
         }
@@ -23,9 +26,13 @@ impl<'a, Q: TypeEnumDescriptor + DeserializeCastable<'a, Q>> Deserialize<'a> for
         use serde::de::*;
 
         /// Manages the deserialization process for a type enum.
-        struct DeserializeEnumVisitor<'a, L: TypeEnumDescriptor + DeserializeCastable<'a, L>>(PhantomData<&'a L>);
+        struct DeserializeEnumVisitor<'a, L: TypeEnumDescriptor + DeserializeCastable<'a, L>>(
+            PhantomData<&'a L>,
+        );
 
-        impl<'a, L: TypeEnumDescriptor + DeserializeCastable<'a, L>> Visitor<'a> for DeserializeEnumVisitor<'a, L> {
+        impl<'a, L: TypeEnumDescriptor + DeserializeCastable<'a, L>> Visitor<'a>
+            for DeserializeEnumVisitor<'a, L>
+        {
             type Value = TypeEnum<L>;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -34,13 +41,19 @@ impl<'a, Q: TypeEnumDescriptor + DeserializeCastable<'a, Q>> Deserialize<'a> for
 
             fn visit_seq<A: SeqAccess<'a>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                 unsafe {
-                    let variant = seq.next_element::<u8>().and_then(|x| x.ok_or_else(|| <A::Error as Error>::custom("Expected variant value.")))?;
-    
-                    let virtual_pointer =
-                        *<L::AsDeserialize<A> as AllCoercible<dyn DeserializeInto<A, L>>>::COERCION_POINTERS.get_unchecked(variant as usize);
-    
+                    let variant = seq.next_element::<u8>().and_then(|x| {
+                        x.ok_or_else(|| <A::Error as Error>::custom("Expected variant value."))
+                    })?;
+
+                    let virtual_pointer = *<L::AsDeserialize<A> as AllCoercible<
+                        dyn DeserializeInto<A, L>,
+                    >>::COERCION_POINTERS
+                        .get_unchecked(variant as usize);
+
                     let res = (std::ptr::null(), virtual_pointer);
-                    let r = (&res as *const (*const (), *const ())).cast::<*const dyn DeserializeInto<A, L>>().read();
+                    let r = (&res as *const (*const (), *const ()))
+                        .cast::<*const dyn DeserializeInto<A, L>>()
+                        .read();
                     <dyn DeserializeInto<A, L>>::deserialize_into(r, &mut seq)
                 }
             }
@@ -83,22 +96,29 @@ trait DeserializeInto<'a, D: serde::de::SeqAccess<'a>, L: TypeEnumDescriptor> {
     fn deserialize_into(self: *const Self, deserializer: &mut D) -> Result<TypeEnum<L>, D::Error>;
 }
 
-impl<'a, D: serde::de::SeqAccess<'a>, T: 'static + Deserialize<'a>, L: TypeEnumDescriptor> DeserializeInto<'a, D, L> for T {
+impl<'a, D: serde::de::SeqAccess<'a>, T: 'static + Deserialize<'a>, L: TypeEnumDescriptor>
+    DeserializeInto<'a, D, L> for T
+{
     fn deserialize_into(self: *const Self, deserializer: &mut D) -> Result<TypeEnum<L>, D::Error> {
-        Ok(TypeEnum::new(deserializer.next_element::<T>().and_then(|x| x.ok_or_else(|| <D::Error as serde::de::Error>::custom("Expected variant value.")))?))
+        Ok(TypeEnum::new(deserializer.next_element::<T>().and_then(
+            |x| x.ok_or_else(|| <D::Error as serde::de::Error>::custom("Expected variant value.")),
+        )?))
     }
 }
 
 /// Marks a type list for which all elements are deserializable.
 trait DeserializeCastable<'a, L: TypeEnumDescriptor>: TypeEnumDescriptor {
     /// The type to use during deserialization.
-    type AsDeserialize<D: serde::de::SeqAccess<'a>>: Castable<dyn DeserializeInto<'a, D, L>> + TypeEnumDescriptor;
+    type AsDeserialize<D: serde::de::SeqAccess<'a>>: Castable<dyn DeserializeInto<'a, D, L>>
+        + TypeEnumDescriptor;
 }
 
 impl<'a, L: TypeEnumDescriptor> DeserializeCastable<'a, L> for EmptyDescriptor {
     type AsDeserialize<S: serde::de::SeqAccess<'a>> = Self;
 }
 
-impl<'a, T: 'static + Deserialize<'a>, R: DeserializeCastable<'a, L>, L: TypeEnumDescriptor> DeserializeCastable<'a, L> for ConsDescriptor<T, R> {
+impl<'a, T: 'static + Deserialize<'a>, R: DeserializeCastable<'a, L>, L: TypeEnumDescriptor>
+    DeserializeCastable<'a, L> for ConsDescriptor<T, R>
+{
     type AsDeserialize<S: serde::de::SeqAccess<'a>> = ConsDescriptor<T, R::AsDeserialize<S>>;
 }

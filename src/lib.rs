@@ -9,7 +9,6 @@
 #![feature(core_intrinsics)]
 #![feature(downcast_unchecked)]
 #![feature(unsize)]
-
 #![allow(clippy::no_effect)]
 #![allow(path_statements)]
 #![deny(warnings)]
@@ -180,12 +179,18 @@ impl<D: TypeEnumDescriptor + Castable<dyn std::fmt::Debug>> std::fmt::Debug for 
 impl<D: TypeEnumDescriptor + Castable<dyn SelfPartialEq>> PartialEq for TypeEnum<D> {
     fn eq(&self, other: &Self) -> bool {
         unsafe {
-            self.variant == other.variant && self.cast::<dyn SelfPartialEq>().partial_eq(other.value.as_ptr() as *const ())
+            self.variant == other.variant
+                && self
+                    .cast::<dyn SelfPartialEq>()
+                    .partial_eq(other.value.as_ptr() as *const ())
         }
     }
 }
 
-impl<D: TypeEnumDescriptor + Castable<dyn SelfPartialEq> + Castable<dyn SelfEq>> Eq for TypeEnum<D> { }
+impl<D: TypeEnumDescriptor + Castable<dyn SelfPartialEq> + Castable<dyn SelfEq>> Eq
+    for TypeEnum<D>
+{
+}
 
 impl<D: TypeEnumDescriptor + Castable<dyn Any>> Deref for TypeEnum<D> {
     type Target = dyn Any;
@@ -522,7 +527,7 @@ trait TypeEnumClone<D: TypeEnumDescriptor>: 'static {
 }
 
 impl<T: 'static + Clone, D: TypeEnumDescriptor> TypeEnumClone<D> for T {
-    fn clone_enum(&self) -> TypeEnum<D>  {
+    fn clone_enum(&self) -> TypeEnum<D> {
         TypeEnum::new(self.clone())
     }
 }
@@ -530,9 +535,9 @@ impl<T: 'static + Clone, D: TypeEnumDescriptor> TypeEnumClone<D> for T {
 /// Allows an object to be compared while wrapped in a type enum.
 trait SelfPartialEq: 'static {
     /// Determines whether this object equals another of the same time.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// For this method to be sound, `other` must point to
     /// a valid instance of type `Self`.
     unsafe fn partial_eq(&self, other: *const ()) -> bool;
@@ -564,7 +569,9 @@ mod private {
     use super::*;
 
     /// A list of type variants.
-    pub trait ListDescriptor: 'static + Copy + Clone + std::fmt::Debug + Default + PartialEq + Eq + AllCoercible<dyn Any> {
+    pub trait ListDescriptor:
+        'static + Copy + Clone + std::fmt::Debug + Default + PartialEq + Eq + AllCoercible<dyn Any>
+    {
         /// An enum type that is big enough to hold any variant in this list.
         type EnumBacking;
         /// The list of type IDs within this descriptor.
