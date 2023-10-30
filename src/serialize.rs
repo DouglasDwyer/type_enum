@@ -48,7 +48,8 @@ impl<'a, Q: TypeEnumDescriptor + DeserializeCastable<'a, Q>> Deserialize<'a> for
                     let virtual_pointer = *<L::AsDeserialize<A> as AllCoercible<
                         dyn DeserializeInto<A, L>,
                     >>::COERCION_POINTERS
-                        .get_unchecked(variant as usize);
+                        .get(variant as usize)
+                        .ok_or_else(|| <A::Error as Error>::custom("Variant out-of-range."))?;
 
                     let res = (std::ptr::null(), virtual_pointer);
                     let r = (&res as *const (*const (), *const ()))
