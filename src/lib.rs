@@ -8,6 +8,8 @@
 #![feature(const_type_id)]
 #![feature(core_intrinsics)]
 #![feature(downcast_unchecked)]
+#![feature(tuple_trait)]
+#![feature(unboxed_closures)]
 #![feature(unsize)]
 #![allow(clippy::no_effect)]
 #![allow(path_statements)]
@@ -58,14 +60,16 @@
 //! ```
 //!
 //! Even though all three constituent types implement `NewBehavior`, the enum does not. Adding functionality to the enum requires modifying its definition; it does not inherit behavior from its variants. If `Bad` and `NewBehavior` were defined in separate crates, implementing `NewBehavior` on `Bad` might even be impossible. `type_enum` reverses this - the traits usable on a `TypeEnum` are inherited from the variants. This allows for extending code by modifying and maintaining the type variants alone.
-//! 
+//!
 //! ## Optional features
-//! 
+//!
 //! **serde** - Allows for the serialization of `TypeEnum` instances when all variants are serializable.
 
 use const_list::*;
 use private::*;
 use std::any::*;
+use std::cmp::*;
+use std::hash::*;
 use std::marker::*;
 use std::mem::*;
 use std::ops::*;
@@ -82,6 +86,60 @@ macro_rules! type_list {
     { $first: ty } => { ConsDescriptor<$first, EmptyDescriptor> };
     { $first: ty, $($ty: ty),+ } => {
         ConsDescriptor<$first, type_list! { $($ty),* }>
+    }
+}
+
+/// Represents a type variant in a type list.
+#[derive(Copy, Clone)]
+pub struct TypeVariant<D: TypeEnumDescriptor>(u8, TypeId, PhantomData<fn() -> D>);
+
+impl<D: TypeEnumDescriptor> TypeVariant<D> {
+    /// Returns the variant of the type that this generic function has been instantiated with.
+    pub const fn of<T: 'static>() -> Self {
+        EnsureNoDuplicates::<D>::VALUE;
+        Self(VariantId::<T, D>::VALUE, TypeId::of::<T>(), PhantomData)
+    }
+
+    /// Gets the discriminant of this variant.
+    pub const fn variant(&self) -> u8 {
+        self.0
+    }
+
+    /// Obtains the `TypeId` of this variant.
+    pub const fn id(&self) -> TypeId {
+        self.1
+    }
+}
+
+impl<D: TypeEnumDescriptor> std::fmt::Debug for TypeVariant<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TypeVariant").field("variant", &self.0).field("id", &self.1).finish()
+    }
+}
+
+impl<D: TypeEnumDescriptor> Hash for TypeVariant<D> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl<D: TypeEnumDescriptor> PartialEq for TypeVariant<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<D: TypeEnumDescriptor> Eq for TypeVariant<D> { }
+
+impl<D: TypeEnumDescriptor> PartialOrd for TypeVariant<D> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+impl<D: TypeEnumDescriptor> Ord for TypeVariant<D> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.cmp(&other.0)
     }
 }
 
@@ -210,10 +268,52 @@ impl<D: TypeEnumDescriptor + Castable<dyn Any>> DerefMut for TypeEnum<D> {
     }
 }
 
+impl<D: TypeEnumDescriptor + HashCastable> Hash for TypeEnum<D> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        unsafe {
+            state.write_u8(self.variant);
+            let virtual_pointer =
+                *<D::AsHash<H> as AllCoercible<dyn HashInto<H>>>::COERCION_POINTERS
+                    .get_unchecked(self.variant as usize);
+            let res = (self.value.as_ptr() as *const (), virtual_pointer);
+            let r = (&res as *const (*const (), *const ()))
+                .cast::<&dyn HashInto<H>>()
+                .read();
+            r.hash_into(state);
+        }
+    }
+}
+
 impl<U: ?Sized, D: TypeEnumDescriptor + Castable<U>> AsRef<U> for TypeEnum<D> {
     fn as_ref(&self) -> &U {
         self.cast()
     }
+}
+
+/// Marks a type that may be hashed.
+trait HashInto<H: Hasher> {
+    /// Hashes the current type.
+    fn hash_into(&self, hasher: &mut H);
+}
+
+impl<H: Hasher, T: 'static + Hash> HashInto<H> for T {
+    fn hash_into(&self, hasher: &mut H) {
+        self.hash(hasher);
+    }
+}
+
+/// Marks a type list for which all elements are hashable.
+trait HashCastable: TypeEnumDescriptor {
+    /// The type to use during serialization.
+    type AsHash<H: Hasher>: Castable<dyn HashInto<H>> + TypeEnumDescriptor;
+}
+
+impl HashCastable for EmptyDescriptor {
+    type AsHash<H: Hasher> = Self;
+}
+
+impl<T: 'static + Hash, R: HashCastable> HashCastable for ConsDescriptor<T, R> {
+    type AsHash<H: Hasher> = ConsDescriptor<T, R::AsHash<H>>;
 }
 
 /// Computes the index of a type within a list descriptor.
@@ -345,40 +445,53 @@ const fn arrays_eq<const N: usize>(a: &[u8; N], b: &[u8; N]) -> bool {
 
 impl<'a, D: ListDescriptor> TypeMatchable for &'a TypeEnum<D> {
     type Descriptor = D;
-    type Output<T: 'static> = &'a T;
+    type Output<T: 'static> = (&'a T,);
 
     fn variant(&self) -> u8 {
         self.variant
     }
 
-    unsafe fn downcast_unchecked<T: 'static>(self) -> Self::Output<T> {
-        (**self).downcast_ref_unchecked()
+    unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O {
+        f((**self).downcast_ref_unchecked())
     }
 }
 
 impl<'a, D: ListDescriptor> TypeMatchable for &'a mut TypeEnum<D> {
     type Descriptor = D;
-    type Output<T: 'static> = &'a mut T;
+    type Output<T: 'static> = (&'a mut T, );
 
     fn variant(&self) -> u8 {
         self.variant
     }
 
-    unsafe fn downcast_unchecked<T: 'static>(self) -> Self::Output<T> {
-        self.downcast_mut_unchecked()
+    unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O {
+        f(self.downcast_mut_unchecked())
     }
 }
 
 impl<D: ListDescriptor> TypeMatchable for TypeEnum<D> {
     type Descriptor = D;
-    type Output<T: 'static> = T;
+    type Output<T: 'static> = (T,);
 
     fn variant(&self) -> u8 {
         self.variant
     }
 
-    unsafe fn downcast_unchecked<T: 'static>(self) -> Self::Output<T> {
-        TypeEnum::downcast_unchecked(self)
+    unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O {
+        f(TypeEnum::downcast_unchecked(self))
+    }
+}
+
+impl<D: ListDescriptor> TypeMatchable for TypeVariant<D> {
+    type Descriptor = D;
+    type Output<T: 'static> = ();
+
+    fn variant(&self) -> u8 {
+        self.0
+    }
+
+    unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O {
+        f()
     }
 }
 
@@ -405,7 +518,7 @@ impl<M: TypeMatchable, O, L: TypeEnumDescriptor> TypeMatch<M, O, Exhaustive, L> 
     /// Adds a case to this type match. Unless `otherwise` is called, all type variants must be present for compilation to succeed.
     pub fn with<T: 'static>(
         self,
-        f: impl FnOnce(M::Output<T>) -> O,
+        f: impl FnOnce<M::Output<T>, Output = O>,
     ) -> TypeMatch<M, O, Exhaustive, ConsDescriptor<T, L>> {
         unsafe {
             if Some(VariantId::<T, M::Descriptor>::VALUE)
@@ -414,7 +527,7 @@ impl<M: TypeMatchable, O, L: TypeEnumDescriptor> TypeMatch<M, O, Exhaustive, L> 
                 TypeMatch {
                     data: PhantomData,
                     matcher: None,
-                    output: Some(f(self.matcher.unwrap_unchecked().downcast_unchecked::<T>())),
+                    output: Some(self.matcher.unwrap_unchecked().downcast_unchecked::<T, O>(f)),
                 }
             } else {
                 TypeMatch {
@@ -490,6 +603,35 @@ impl<D: ListDescriptor> EnsureNoDuplicates<D> {
 }
 
 /// Ensures that `A` is a subset of `B`.
+pub const fn subset_of<A: TypeEnumDescriptor, B: TypeEnumDescriptor>() -> bool {
+    let mut i = 0;
+    while i < A::IDS.len() {
+        let mut found = false;
+        let mut j = 0;
+        while j < B::IDS.len() {
+            match (A::IDS.get(i), B::IDS.get(j)) {
+                (Some(a), Some(b)) => {
+                    if type_ids_eq(a, b) {
+                        found = true;
+                        break;
+                    }
+                }
+                _ => unreachable!(),
+            }
+            j += 1;
+        }
+
+        if !found {
+            return false;
+        }
+
+        i += 1;
+    }
+
+    true
+}
+
+/// Ensures that `A` is a subset of `B`.
 struct EnsureListSubset<A: ListDescriptor, B: ListDescriptor>(PhantomData<fn() -> (A, B)>);
 
 impl<A: ListDescriptor, B: ListDescriptor> EnsureListSubset<A, B> {
@@ -559,14 +701,41 @@ trait SelfEq: 'static {}
 impl<T: 'static + Eq> SelfEq for T {}
 
 /// A list of type variants.
-pub trait TypeEnumDescriptor: ListDescriptor {}
+pub trait TypeEnumDescriptor: ListDescriptor {
+    /// The IDs of all types in this list.
+    const TYPE_IDS: &'static [TypeVariant<Self>];
+}
 
-impl<T: ListDescriptor> TypeEnumDescriptor for T {}
+impl<T: ListDescriptor> TypeEnumDescriptor for T {
+    const TYPE_IDS: &'static [TypeVariant<Self>] = create_type_id_list::<Self>();
+}
 
 /// A list of type variants that may be coerced to the given unsized type.
 pub trait Castable<U: ?Sized>: AllCoercible<U> {}
 
 impl<U: ?Sized, T: AllCoercible<U>> Castable<U> for T {}
+
+/// Creates a new compile-time array with the type IDs in the list descriptor.
+const fn create_type_id_list<T: ListDescriptor>() -> &'static [TypeVariant<T>] {
+    unsafe {
+        let values = std::intrinsics::const_allocate(
+            T::IDS.len() * std::mem::size_of::<TypeVariant<T>>(),
+            std::mem::align_of::<TypeVariant<T>>(),
+        ) as *mut TypeVariant<T>;
+
+        let mut i = 0;
+        while i < T::IDS.len() {
+            if let Some(id) = T::IDS.get(i) {
+                values.add(i).write(TypeVariant(i as u8, *id, PhantomData));
+            } else {
+                unreachable!()
+            }
+            i += 1;
+        }
+
+        from_raw_parts(values, T::IDS.len())
+    }
+}
 
 /// Hides implementation-related traits.
 mod private {
@@ -609,7 +778,7 @@ mod private {
         /// The list of variants for this type.
         type Descriptor: ListDescriptor;
         /// The output provided for a given type.
-        type Output<T: 'static>;
+        type Output<T: 'static>: Tuple;
 
         /// The variant index of this matcher.
         fn variant(&self) -> u8;
@@ -619,7 +788,7 @@ mod private {
         /// # Safety
         ///
         /// For this type to be sound, the type enum must be of the correct variant.
-        unsafe fn downcast_unchecked<T: 'static>(self) -> Self::Output<T>;
+        unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O;
     }
 
     /// Marks a match where all cases must be covered.
