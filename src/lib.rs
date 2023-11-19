@@ -204,6 +204,11 @@ impl<D: TypeEnumDescriptor> TypeEnum<D> {
         self.value.as_ptr().cast::<T>().read()
     }
 
+    /// Gets the variant associated with this value.
+    pub fn variant(&self) -> TypeVariant<D> {
+        TypeVariant(self.variant, self.cast::<dyn Any>().type_id(), PhantomData)
+    }
+
     /// Coerces this type enum to an unsized type, and returns a raw pointer to the value.
     const fn cast_raw<U: ?Sized>(&self) -> *const U
     where
