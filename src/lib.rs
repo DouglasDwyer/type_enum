@@ -3,7 +3,6 @@
 #![feature(const_maybe_uninit_as_mut_ptr)]
 #![feature(const_mut_refs)]
 #![feature(const_slice_index)]
-#![feature(const_ptr_read)]
 #![feature(const_ptr_write)]
 #![feature(const_type_id)]
 #![feature(core_intrinsics)]
@@ -113,7 +112,10 @@ impl<D: TypeEnumDescriptor> TypeVariant<D> {
 
 impl<D: TypeEnumDescriptor> std::fmt::Debug for TypeVariant<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TypeVariant").field("variant", &self.0).field("id", &self.1).finish()
+        f.debug_struct("TypeVariant")
+            .field("variant", &self.0)
+            .field("id", &self.1)
+            .finish()
     }
 }
 
@@ -129,11 +131,11 @@ impl<D: TypeEnumDescriptor> PartialEq for TypeVariant<D> {
     }
 }
 
-impl<D: TypeEnumDescriptor> Eq for TypeVariant<D> { }
+impl<D: TypeEnumDescriptor> Eq for TypeVariant<D> {}
 
 impl<D: TypeEnumDescriptor> PartialOrd for TypeVariant<D> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.0.partial_cmp(&other.0)
+        Some(self.cmp(other))
     }
 }
 
@@ -215,8 +217,9 @@ impl<D: TypeEnumDescriptor> TypeEnum<D> {
         D: Castable<U>,
     {
         unsafe {
-            let virtual_pointer =
-                *<D as AllCoercible<U>>::COERCION_POINTERS.get_unchecked(self.variant as usize);
+            let virtual_pointer = *<D as AllCoercible<U>>::COERCION_POINTERS
+                .as_ptr()
+                .add(self.variant as usize); //S.get_unchecked(self.variant as usize);
             let res = (self.value.as_ptr() as *const (), virtual_pointer);
             (&res as *const (*const (), *const ())).cast::<&U>().read()
         }
@@ -365,7 +368,7 @@ impl<F: 'static, R: ListDescriptor> Copy for ConsDescriptor<F, R> {}
 
 impl<F: 'static, R: ListDescriptor> Clone for ConsDescriptor<F, R> {
     fn clone(&self) -> Self {
-        Self(PhantomData)
+        *self
     }
 }
 
@@ -456,20 +459,26 @@ impl<'a, D: ListDescriptor> TypeMatchable for &'a TypeEnum<D> {
         self.variant
     }
 
-    unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O {
+    unsafe fn downcast_unchecked<T: 'static, O>(
+        self,
+        f: impl FnOnce<Self::Output<T>, Output = O>,
+    ) -> O {
         f((**self).downcast_ref_unchecked())
     }
 }
 
 impl<'a, D: ListDescriptor> TypeMatchable for &'a mut TypeEnum<D> {
     type Descriptor = D;
-    type Output<T: 'static> = (&'a mut T, );
+    type Output<T: 'static> = (&'a mut T,);
 
     fn variant(&self) -> u8 {
         self.variant
     }
 
-    unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O {
+    unsafe fn downcast_unchecked<T: 'static, O>(
+        self,
+        f: impl FnOnce<Self::Output<T>, Output = O>,
+    ) -> O {
         f(self.downcast_mut_unchecked())
     }
 }
@@ -482,7 +491,10 @@ impl<D: ListDescriptor> TypeMatchable for TypeEnum<D> {
         self.variant
     }
 
-    unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O {
+    unsafe fn downcast_unchecked<T: 'static, O>(
+        self,
+        f: impl FnOnce<Self::Output<T>, Output = O>,
+    ) -> O {
         f(TypeEnum::downcast_unchecked(self))
     }
 }
@@ -495,7 +507,10 @@ impl<D: ListDescriptor> TypeMatchable for TypeVariant<D> {
         self.0
     }
 
-    unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O {
+    unsafe fn downcast_unchecked<T: 'static, O>(
+        self,
+        f: impl FnOnce<Self::Output<T>, Output = O>,
+    ) -> O {
         f()
     }
 }
@@ -532,7 +547,11 @@ impl<M: TypeMatchable, O, L: TypeEnumDescriptor> TypeMatch<M, O, Exhaustive, L> 
                 TypeMatch {
                     data: PhantomData,
                     matcher: None,
-                    output: Some(self.matcher.unwrap_unchecked().downcast_unchecked::<T, O>(f)),
+                    output: Some(
+                        self.matcher
+                            .unwrap_unchecked()
+                            .downcast_unchecked::<T, O>(f),
+                    ),
                 }
             } else {
                 TypeMatch {
@@ -793,7 +812,10 @@ mod private {
         /// # Safety
         ///
         /// For this type to be sound, the type enum must be of the correct variant.
-        unsafe fn downcast_unchecked<T: 'static, O>(self, f: impl FnOnce<Self::Output<T>, Output = O>) -> O;
+        unsafe fn downcast_unchecked<T: 'static, O>(
+            self,
+            f: impl FnOnce<Self::Output<T>, Output = O>,
+        ) -> O;
     }
 
     /// Marks a match where all cases must be covered.
