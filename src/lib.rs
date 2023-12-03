@@ -90,7 +90,7 @@ macro_rules! type_list {
 
 /// Represents a type variant in a type list.
 #[derive(Copy, Clone)]
-pub struct TypeVariant<D: TypeEnumDescriptor>(u8, TypeId, PhantomData<fn() -> D>);
+pub struct TypeVariant<D: TypeEnumDescriptor>(u16, TypeId, PhantomData<fn() -> D>);
 
 impl<D: TypeEnumDescriptor> TypeVariant<D> {
     /// Returns the variant of the type that this generic function has been instantiated with.
@@ -100,7 +100,7 @@ impl<D: TypeEnumDescriptor> TypeVariant<D> {
     }
 
     /// Gets the discriminant of this variant.
-    pub const fn variant(&self) -> u8 {
+    pub const fn variant(&self) -> u16 {
         self.0
     }
 
@@ -145,10 +145,53 @@ impl<D: TypeEnumDescriptor> Ord for TypeVariant<D> {
     }
 }
 
+/// Efficiently stores variants of types in the descriptor list, and allows
+/// for accessing them by type.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TypeVec<D: TypeEnumDescriptor>(D::VecBacking);
+
+impl<D: TypeEnumDescriptor> TypeVec<D> {
+    /// Creates a new type vector.
+    pub fn new() -> Self {
+        Self(D::VecBacking::new())
+    }
+
+    /// Gets a reference to the vector associated with the given type.
+    pub fn get<T: 'static>(&self) -> &Vec<T> {
+        self.0.get()
+    }
+
+    /// Gets a mutable reference to the vector associated with the given type.
+    pub fn get_mut<T: 'static>(&mut self) -> &mut Vec<T> {
+        self.0.get_mut()
+    }
+
+    /// Pushes the given value onto the back of the vector with the proper type.
+    pub fn push(&mut self, value: TypeEnum<D>) {
+        self.0.push(value);
+    }
+}
+
+impl<D: TypeEnumDescriptor> Extend<TypeEnum<D>> for TypeVec<D> {
+    fn extend<T: IntoIterator<Item = TypeEnum<D>>>(&mut self, iter: T) {
+        for item in iter {
+            self.push(item);
+        }
+    }
+}
+
+impl<D: TypeEnumDescriptor> FromIterator<TypeEnum<D>> for TypeVec<D> {
+    fn from_iter<T: IntoIterator<Item = TypeEnum<D>>>(iter: T) -> Self {
+        let mut res = Self::new();
+        res.extend(iter);
+        res
+    }
+}
+
 /// Stores one out of a set number of types.
 pub struct TypeEnum<D: TypeEnumDescriptor> {
     /// The variant of this type enum.
-    variant: u8,
+    variant: u16,
     /// The value of the type enum.
     value: MaybeUninit<D::EnumBacking>,
 }
@@ -203,7 +246,9 @@ impl<D: TypeEnumDescriptor> TypeEnum<D> {
     /// For this function call to be sound, this type enum must have been created with a `T` value.
     pub unsafe fn downcast_unchecked<T: 'static>(self) -> T {
         VariantId::<T, D>::VALUE;
-        self.value.as_ptr().cast::<T>().read()
+        let res = self.value.as_ptr().cast::<T>().read();
+        forget(self);
+        res
     }
 
     /// Gets the variant associated with this value.
@@ -279,7 +324,7 @@ impl<D: TypeEnumDescriptor + Castable<dyn Any>> DerefMut for TypeEnum<D> {
 impl<D: TypeEnumDescriptor + HashCastable> Hash for TypeEnum<D> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         unsafe {
-            state.write_u8(self.variant);
+            state.write_u16(self.variant);
             let virtual_pointer =
                 *<D::AsHash<H> as AllCoercible<dyn HashInto<H>>>::COERCION_POINTERS
                     .get_unchecked(self.variant as usize);
@@ -329,15 +374,15 @@ struct VariantId<T: 'static, D: ListDescriptor>(PhantomData<fn() -> (T, D)>);
 
 impl<T: 'static, D: ListDescriptor> VariantId<T, D> {
     /// The value of the index of `T` within the list `D`.
-    pub const VALUE: u8 = Self::index_of();
+    pub const VALUE: u16 = Self::index_of();
 
     /// Computes the index of a variant.
-    const fn index_of() -> u8 {
+    const fn index_of() -> u16 {
         let mut i = 0;
         while i < D::IDS.len() {
             if let Some(x) = D::IDS.get(i) {
                 if type_ids_eq(x, &TypeId::of::<T>()) {
-                    return i as u8;
+                    return i as u16;
                 }
             } else {
                 unreachable!();
@@ -354,6 +399,7 @@ pub struct EmptyDescriptor;
 
 impl ListDescriptor for EmptyDescriptor {
     type EnumBacking = ();
+    type VecBacking = EmptyTypeVecHolder;
     const IDS: ConstList<'static, TypeId> = ConstList::new();
 }
 
@@ -394,6 +440,7 @@ impl<F: 'static, R: ListDescriptor> Eq for ConsDescriptor<F, R> {}
 
 impl<F: 'static, R: ListDescriptor> ListDescriptor for ConsDescriptor<F, R> {
     type EnumBacking = LinkedUnion<F, R::EnumBacking>;
+    type VecBacking = ConsTypeVecHolder<F, R::VecBacking>;
     const IDS: ConstList<'static, TypeId> = R::IDS.push(TypeId::of::<F>());
 }
 
@@ -455,7 +502,7 @@ impl<'a, D: ListDescriptor> TypeMatchable for &'a TypeEnum<D> {
     type Descriptor = D;
     type Output<T: 'static> = (&'a T,);
 
-    fn variant(&self) -> u8 {
+    fn variant(&self) -> u16 {
         self.variant
     }
 
@@ -471,7 +518,7 @@ impl<'a, D: ListDescriptor> TypeMatchable for &'a mut TypeEnum<D> {
     type Descriptor = D;
     type Output<T: 'static> = (&'a mut T,);
 
-    fn variant(&self) -> u8 {
+    fn variant(&self) -> u16 {
         self.variant
     }
 
@@ -487,7 +534,7 @@ impl<D: ListDescriptor> TypeMatchable for TypeEnum<D> {
     type Descriptor = D;
     type Output<T: 'static> = (T,);
 
-    fn variant(&self) -> u8 {
+    fn variant(&self) -> u16 {
         self.variant
     }
 
@@ -503,7 +550,7 @@ impl<D: ListDescriptor> TypeMatchable for TypeVariant<D> {
     type Descriptor = D;
     type Output<T: 'static> = ();
 
-    fn variant(&self) -> u8 {
+    fn variant(&self) -> u16 {
         self.0
     }
 
@@ -750,7 +797,7 @@ const fn create_type_id_list<T: ListDescriptor>() -> &'static [TypeVariant<T>] {
         let mut i = 0;
         while i < T::IDS.len() {
             if let Some(id) = T::IDS.get(i) {
-                values.add(i).write(TypeVariant(i as u8, *id, PhantomData));
+                values.add(i).write(TypeVariant(i as u16, *id, PhantomData));
             } else {
                 unreachable!()
             }
@@ -771,6 +818,10 @@ mod private {
     {
         /// An enum type that is big enough to hold any variant in this list.
         type EnumBacking;
+
+        /// A
+        type VecBacking: TypeVecHolder;
+
         /// The list of type IDs within this descriptor.
         const IDS: ConstList<'static, TypeId>;
     }
@@ -797,6 +848,83 @@ mod private {
         _b: ManuallyDrop<B>,
     }
 
+    /// Provides the backing storage for a `TypeVec` with no types.
+    #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct EmptyTypeVecHolder;
+
+    /// Provides the backing storage for a `TypeVec` with multiple types.
+    #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct ConsTypeVecHolder<F: 'static, R: TypeVecHolder>(Vec<F>, R);
+
+    /// Provides the ability to efficiently store type variants in a set of vectors.
+    pub trait TypeVecHolder {
+        /// Creates a new vector set.
+        fn new() -> Self;
+
+        /// Gets a reference to the list of items of the given type.
+        fn get<T: 'static>(&self) -> &Vec<T>;
+
+        /// Gets a mutable reference to the list of items of the given type.
+        fn get_mut<T: 'static>(&mut self) -> &mut Vec<T>;
+
+        /// Pushes the given value onto the back of the vector with the proper type.
+        fn push<D: TypeEnumDescriptor>(&mut self, value: TypeEnum<D>);
+    }
+
+    impl TypeVecHolder for EmptyTypeVecHolder {
+        fn new() -> Self {
+            Self
+        }
+
+        fn get<T: 'static>(&self) -> &Vec<T> {
+            unreachable!()
+        }
+
+        fn get_mut<T: 'static>(&mut self) -> &mut Vec<T> {
+            unreachable!()
+        }
+
+        fn push<D: TypeEnumDescriptor>(&mut self, _: TypeEnum<D>) {
+            unreachable!()
+        }
+    }
+
+    impl<F: 'static, R: TypeVecHolder> TypeVecHolder for ConsTypeVecHolder<F, R> {
+        fn new() -> Self {
+            Self(Vec::new(), R::new())
+        }
+
+        fn get<T: 'static>(&self) -> &Vec<T> {
+            unsafe {
+                if TypeId::of::<F>() == TypeId::of::<T>() {
+                    transmute(&self.0)
+                } else {
+                    self.1.get()
+                }
+            }
+        }
+
+        fn get_mut<T: 'static>(&mut self) -> &mut Vec<T> {
+            unsafe {
+                if TypeId::of::<F>() == TypeId::of::<T>() {
+                    transmute(&mut self.0)
+                } else {
+                    self.1.get_mut()
+                }
+            }
+        }
+
+        fn push<D: TypeEnumDescriptor>(&mut self, value: TypeEnum<D>) {
+            unsafe {
+                if value.is::<F>() {
+                    self.0.push(value.downcast_unchecked());
+                } else {
+                    self.1.push(value);
+                }
+            }
+        }
+    }
+
     /// Marks a type that can be matched with `type_match`.
     pub trait TypeMatchable {
         /// The list of variants for this type.
@@ -805,7 +933,7 @@ mod private {
         type Output<T: 'static>: Tuple;
 
         /// The variant index of this matcher.
-        fn variant(&self) -> u8;
+        fn variant(&self) -> u16;
 
         /// Downcasts this value to the given type.
         ///
