@@ -3,6 +3,7 @@
 #![feature(const_maybe_uninit_as_mut_ptr)]
 #![feature(const_mut_refs)]
 #![feature(const_slice_index)]
+#![feature(const_intrinsic_copy)]
 #![feature(const_ptr_write)]
 #![feature(const_type_id)]
 #![feature(core_intrinsics)]
@@ -11,6 +12,7 @@
 #![feature(unboxed_closures)]
 #![feature(unsize)]
 #![allow(clippy::no_effect)]
+#![allow(internal_features)]
 #![allow(path_statements)]
 #![deny(warnings)]
 #![warn(missing_docs)]
@@ -444,11 +446,6 @@ impl<F: 'static, R: ListDescriptor> ListDescriptor for ConsDescriptor<F, R> {
     const IDS: ConstList<'static, TypeId> = R::IDS.push(TypeId::of::<F>());
 }
 
-impl<F: 'static, R: ListDescriptor> NonemptyListDescriptor for ConsDescriptor<F, R> {
-    type First = F;
-    type Rest = R;
-}
-
 impl<U: ?Sized, F: 'static + Unsize<U>, R: ListDescriptor + AllCoercible<U>> AllCoercible<U>
     for ConsDescriptor<F, R>
 {
@@ -824,14 +821,6 @@ mod private {
 
         /// The list of type IDs within this descriptor.
         const IDS: ConstList<'static, TypeId>;
-    }
-
-    /// A non-empty list of type variants.
-    pub trait NonemptyListDescriptor: ListDescriptor {
-        /// The first type in the list.
-        type First: 'static;
-        /// The rest of the list.
-        type Rest: ListDescriptor;
     }
 
     /// Marks lists for which all enum variants are coercible to `U`.
